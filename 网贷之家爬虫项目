@@ -1,1 +1,298 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Sep 12 09:52:01 2018
 
+@author: YJL
+"""
+
+    '''
+    #爬取所有平台网址索引，正则表达式
+    import re
+    import urllib.request
+    for i in range (0,10000):
+      try:  
+            url_page='http://shuju.wdzj.com/plat-info-'+str(i)+'.html'
+            pat_page='name="keywords" content="(.*?)"'
+            data_page=opener.open(url_page).read().decode("utf8","ignore")
+            item=re.compile(pat_page).findall(data_page)
+            s=item[0]
+            print(i)
+            if "null" not in s:
+                url_list.append(i)
+                print ('第'+str(i)+'次存在数据')
+                
+                with open ('D:\\data.pickle','wb') as f:
+                    pickle.dump(url_list,f)
+      except urllib.error.URLError as e:#异常检测模块
+             print(e)
+    '''
+    
+def spider_wdzj(spider_date):
+    import re
+    from bs4 import BeautifulSoup
+    import urllib.request
+    import pandas as pd
+    import numpy as np
+    import pickle
+    import time
+    import pymysql
+    import datetime
+    #替换报头，浏览器伪装
+    headers=("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.75 Safari/537.36")
+    opener=urllib.request.build_opener()#添加报头信息
+    opener.addheaders=[headers]#添加报头
+    
+    #通过pickle取出所有有效网页
+    url_list=[]
+    error_list=[]
+    fr=open('D:\\data.pickle','rb')
+    url_list= pickle.load(fr)
+    fr1=open('D:\\dict_p2p.pickle','rb')
+    dict_p=pickle.load(fr1)
+    
+    #-----------------------------------------------------------------------
+    #数据库连接，建表
+    db=pymysql.connect('localhost','root','123456','p2p')
+    db.autocommit(True)
+    print('连接数据库成功')
+    cursor=db.cursor()
+    
+    sql_create="create table "+str(spider_date)+" (id INT auto_increment key,平台名称 char(10),`成交量(万元)` decimal(12,2),
+                                                   `待还余额(万元)` decimal(12,2), `参考收益率(%)` decimal(5,2),`平均借款期限(月)` 
+                                                   decimal(5,2),`投资人数(人)` int, `人均投资金额(万元)` decimal(10,2),`待收投资人数(人)`
+                                                   int(10),`借款人数(人)` int,`人均借款金额(万元)`  decimal(10,2),`借款标数(个)` int(10),
+                                                   `待还借款人数(人)` int,日期 date,key id(id))"
+    cursor.execute(sql_create)
+    cursor.close
+    sql_insert="insert into "+str(spider_date)+" (平台名称,`成交量(万元)`,`待还余额(万元)`,`参考收益率(%%)`,
+                                                  `平均借款期限(月)`,`投资人数(人)`, `人均投资金额(万元)`,`待收投资人数(人)`,`借款人数(人)`,
+                                                  `人均借款金额(万元)`,`借款标数(个)`,`待还借款人数(人)`,日期)  values 
+                                                  ('%s',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'%s')"
+    print('建表成功')
+    
+    #-----------------------------------------------------------------------------------------             
+    index1_list=url_list
+    #二维数组全遍历，降为一维数组,,需要遍历每页上每行网址时用
+    #url_list=[i for b in url_list for i in b]
+    #构建URL
+    for e,a in enumerate( index1_list):
+    
+        url='http://shuju.wdzj.com/plat-info-'+str(a)+'.html'
+        
+    #发送请求打开网页
+        data=opener.open(url).read()
+    
+    #BeautifulSoup，编译网页
+        field=BeautifulSoup(data,'html.parser',from_encoding='utf-8')
+    #找出所有包含P且class_='title'的标签，标签中class=“abc”相当于字典，筛选条件用 键=“值”的形式
+    #PS：class与内置名重复，改为class_
+        title_list=field.find_all('h1')
+        field_list=field.find_all('div',class_='')
+        data_list=field.find_all('div',class_='rate-data')
+        print(str(e)+"获取成功")
+    #创建空LIST，存放数据
+        try:
+            titlels=title_list[0].get('alt')
+            
+            rus=[]
+        except IndexError as e:
+            print(str(e)+'次没有数据')
+            continue
+    #创建空DF， #创建DF时必须要加入INDEX
+        df=pd.DataFrame({"平台名称":titlels},index=[e+1])
+        fieldls=['成交量(万元)','待还余额(万元)','参考收益率(%)','平均借款期限(月)','投资人数(人)', '人均投资金额(万元)',
+                 '待收投资人数(人)','借款人数(人)','人均借款金额(万元)','借款标数(个)','待还借款人数(人)']
+    #get_text()输出标签下的内容，去掉所有空格，逐个添加list，注意写上下标
+        for i,datax in enumerate(data_list):    
+            data1=str(datax.get_text())
+            data1=data1.strip()
+            data1=data1.replace("\t","")
+            data1=data1.replace("\n","")
+            data1=data1.replace("\r","")
+            data1=data1.replace(" ","")
+            data1=data1.replace(",","")
+            rus.insert(i,data1)
+    #把两个list的数据转为一个DF
+        for i in range(len(rus)):
+            df[fieldls[i]]=rus[i]#添加一个新键以及对应值
+        df['日期']=datetime.datetime.now().strftime('%Y-%m-%d')   
+        date1=datetime.datetime.now().strftime('%Y-%m-%d')
+   ------------------------------------------------------------------------------- 
+    #写入CSV，mode=‘a’，添加
+        file_address='D:/'+str(spider_date)+'.csv'
+        file=open(file_address,'a')
+        
+        new_sequence=[]
+        df1=df
+        if e==0 :
+            df1.to_csv(file,index=True,mode='a',sep=',',header=1)
+        else:
+            df1.to_csv(file,index=True,mode='a',sep=',',header=0)
+        file.close()
+        print("CSV写入成功")
+    -----------------------------------------------------------------------------------
+    #数据库插入一条数据
+        line=titlels,rus[0],rus[1],rus[2],rus[3],rus[4],rus[5],rus[6],rus[7],rus[8],rus[9],rus[10],date1
+        
+        cursor.execute(sql_insert%line)
+        print(str(e)+'插入数据库')
+    
+    cursor.close
+    db.close
+    
+    return
+
+import datetime
+if __name__ == '__main__':
+    spider_date='wdzj'+datetime.datetime.now().strftime('%m%d')
+    spider_wdzj(spider_date)
+==========================================================================================================================================
+
+
+#处理POST表单数据
+def post_wdzj():
+    import re
+    from bs4 import BeautifulSoup
+    import urllib.request
+    import pandas as pd
+    import numpy as np
+    import pickle
+    import time
+    import pymysql
+    import datetime
+    import json
+    import requests
+    
+    
+    headers=("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.75 Safari/537.36")
+    opener=urllib.request.build_opener()#添加报头信息
+    opener.addheaders=[headers]#添加报头
+    
+    #通过pickle取出所有有效网页
+    url_list=[]
+    error_list=[]
+    fr=open('D:\\data.pickle','rb')
+    url_list= pickle.load(fr)
+    fr1=open('D:\\dict_p2p.pickle','rb')
+    dict_p=pickle.load(fr1)
+    
+    
+    url='https://shuju.wdzj.com/plat-info-target.html'
+    header={'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Safari/537.36'}
+    
+    #fiddle抓包获取，伪装post
+    form_data={'wdzjPlatId':91,'type':1,'target1':1,'target2':0}
+    proxies1={'https':'222.76.74.214:808'}
+    data=requests.post(url,form_data,verify=False,headers=header)
+    di=json.loads(data.text)
+    
+    titlels=dict_p['平台名称']
+
+    for b,c,d in [[1,1,0],[2,1,0],[3,1,0]]:
+        df=pd.DataFrame(columns=di['date'])
+        df.insert(0,'ID',0) 
+        for e,i in enumerate(url_list) :
+            form_data={'wdzjPlatId':i,'type':b,'target1':c,'target2':d}
+            data=requests.post(url,form_data,verify=False,headers=header)
+            #结果str转为dict
+            di=json.loads(data.text)
+            df1=pd.DataFrame([di['data1']],columns=di['date'])
+            df1.insert(0,'ID',i)        
+            df=pd.concat([df,df1])
+            print('第%d次添加成功'%e)  
+        df['平台名称']=titlels
+        if b==1:
+            file=open('D:\\volume_day.csv','w')
+            df.to_csv(file,sep=',',index=False,header=1)
+            print('日成交量生成成功')
+        if b==2:
+            file=open('D:\\volume_week.csv','w')
+            df.to_csv(file,sep=',',header=1)
+            print('周成交量生成成功')
+        if b==3:
+            file=open('D:\\volume_month.csv','w')
+            df.to_csv(file,sep=',',header=1)
+            print('月成交量生成成功')
+    for b,c,d in [1,5,6][[2,5,6],[3,5,6]]:
+        df=pd.DataFrame(columns=di['date'])
+        df.insert(0,'ID',0)
+        df.insert(1,'平台名称',0)
+        df.insert(2,'类型',0)
+        for e,i in enumerate(url_list) :
+            form_data={'wdzjPlatId':i,'type':b,'target1':c,'target2':d}
+            data=requests.post(url,form_data,verify=False,headers=header)
+            #结果str转为dict
+            di=json.loads(data.text)
+            df1=pd.DataFrame([di['data1'],di['data2']],columns=di['date'])
+            df1.insert(0,column='ID',value=i)
+            df1.insert(1,column='平台名称',value=titlels[e])
+            df1.insert(2,column='类型',value=['投资人数','借款人数'])
+            df=pd.concat([df,df1],sort=False)
+            print('第%d次添加成功'%e)
+        if b==1:
+            file=open('D:\\people_day.csv','w')
+            df.to_csv(file,sep=',',index=False,header=1)
+            print('日人数生成成功')
+        if b==2:
+            file=open('D:\\people_week.csv','w')
+            df.to_csv(file,sep=',',header=1)
+            print('周人数生成成功')
+        if b==3:
+            file=open('D:\\people_month.csv','w')
+            df.to_csv(file,sep=',',header=1)
+            print('月人数生成成功')
+        file.close
+    return
+
+====================================================================================================================    
+        
+#获取ID对应平台名称 
+titlels=[]
+for e,a in enumerate(url_list):
+    a=91
+    url1='http://shuju.wdzj.com/plat-info-'+str(a)+'.html'
+    headers=("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.75 Safari/537.36")
+    opener=urllib.request.build_opener()#添加报头信息
+    opener.addheaders=[headers]#添加报头
+    data=opener.open(url1).read()
+    field=BeautifulSoup(data,'html.parser',from_encoding='utf-8')
+    title_list=field.find_all('h1")
+    print(str(e)+"获取成功")
+    thistitle=title_list[0].get('alt')
+    titlels.append(thistitle)
+
+#获取各平台所属地区列表
+import pickle
+from bs4 import BeautifulSoup
+import urllib.request
+import re
+import pandas as pd
+
+fr1=open('D:\\dict_p2p.pickle','rb')
+dict_p=pickle.load(fr1)
+
+header=("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.75 Safari/537.36")
+opener=urllib.request.build_opener()
+opener.addheaders=[header]
+
+area1=[]
+area2=[]
+for e,i in enumerate(dict_p['ID']):
+    url1='http://shuju.wdzj.com/plat-info-'+str(i)+'.html'
+    data=opener.open(url1).read()
+    data=data.decode('utf-8')
+    pat1=('<em>(.*?) ·')
+    area_name1=re.compile(pat1).findall(data)
+    pat2=(' · (.*?)</em>')
+    area_name2=re.compile(pat2).findall(data)
+    area1.append(area_name1[0])
+    area2.append(area_name2[0])
+    print(e)
+    
+df=pd.DataFrame(dict_p)
+df['一级地区']=area1
+df['二级地区']=area2
+
+f=open('D:\\p2p_arealist.csv','w')
+df.to_csv(f)
+f.close
