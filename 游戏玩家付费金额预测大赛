@@ -1,0 +1,456 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Nov 20 14:03:01 2018
+
+@author: YJL
+"""    			
+
+import pandas as pd
+import numpy as np
+from matplotlib import pyplot as plt
+
+#载入数据
+f=open(r'C:\Users\YJL\Desktop\tap4fun竞赛数据\tap_fun_train.csv','r')
+data=pd.read_csv(f)
+
+#数据探索
+data.isnull()
+pd.set_option('display.max_columns',None)
+pd.DataFrame.head(data)
+pd.DataFrame.describe(data)
+plt.plot(list(data.prediction_pay_price.sort_values()),'o')
+plt.show()
+
+data['prediction_pay_price'][data.prediction_pay_price==0].count()
+#仅2%的玩家会付费，回归问题有太多0值
+
+#先通过常规回归方法看下情况
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import r2_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestRegressor
+import xgboost as xgb 
+from sklearn.feature_selection import SelectKBest
+from sklearn.metrics import f1_score
+from sklearn.feature_selection import f_regression
+from sklearn.feature_selection import chi2
+from sklearn.linear_model import Lasso,LassoCV
+
+X=data.iloc[:,2:108]
+Y=data.iloc[:,108]
+
+X=X.iloc[:,2:108]
+
+sk=SelectKBest(f_regression,k=20)
+X_sk=sk.fit_transform(X,Y)
+
+X.columns[sk.get_support()]
+
+X1=StandardScaler().fit_transform(X_sk)
+
+
+score=cross_val_score(Lasso(),X1,Y)
+print(score.mean())
+#0.52
+
+data1=data.sort_values(['prediction_pay_price'])
+
+data1=data1.iloc[2242017::,:]
+
+X2=data1.iloc[:,0:108]
+Y2=data1.iloc[:,108]
+
+X2=X2.iloc[:,2:108]
+
+x1,x11,y1,y11=train_test_split(X,Y,train_size=0.2,random_state=2)
+
+score1=cross_val_score(RandomForestRegressor(),X1,Y1,scoring='r2')
+print(score1.mean())
+score2=cross_val_score(Lasso(),x1,y1,cv=4,scoring='r2')
+print(score2.mean())
+score3=cross_val_score(SVR(kernel='linear'),X1,Y1,cv=4,scoring='r2')
+print(score3.mean())
+#简单做个baseline
+#================================================================
+
+处理多0值回归：先分类，再回归，通过某个特征先分割标签的有效值和0值，就要求这个特征为0时标签也是0
+#探索7日内付费玩家与45内付费完成的关系，分四类人：
+#7日内付费，45日内再付费；
+#7日内付费，45日不再付费；
+#7日内无付费，45日付费；
+#7日内无付费，45日也不付费
+
+#总人数2288007
+#7日内付费人数41438
+data_0=data[data.pay_price==0]
+data_7=data[data.pay_price>0]
+data_7.count()
+
+#7日内付费，45日内再付费人数,11309，忠实玩家，研究主体
+data_7_45=data_7[data.prediction_pay_price>data.pay_price]
+
+#7日内付费，45日无付费人数30130，弃坑玩家,45日预测等于7日内付费
+data_7_0=data_7[data.prediction_pay_price<=data.pay_price]
+
+#7日内无付费，45日付费,4549人，后知后觉，人数少，可忽略可优化
+data_0_45=data_0[data.prediction_pay_price>0]
+
+#7日内无付费，45日无付费剩余的两百多万，酱油党
+
+总结思路:当预测一个玩家45日会不会付费，先通过7日内是否付费筛选，7日无付费则45日也不付费的概率为99.8%（220万人仅4000人会付）
+对7日付费玩家，先分类预测是否会45付费，预测为1时，预测金额等于后续回归预测值，预测为0则付费金额为0
+
+#---------------
+#首先对7日内玩家做分类模型
+
+#去掉不适用的特征，打标签
+data1_7=data_7.iloc[:,2:108]
+data1_7['prediction_pay']=(data_7.pay_price<data_7.prediction_pay_price).map({True:1,False:0})
+
+X=data1_7.iloc[:,0:106]
+Y=data1_7.iloc[:,106]
+            
+#归一化下
+X_st=StandardScaler().fit_transform(X,Y)
+
+#选分类模型
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from xgboost.sklearn import XGBClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import roc_auc_score
+from xgboost import XGBRegressor
+'''
+score_clf1=cross_val_score(RandomForestClassifier(n_estimators=100),X_st,Y,cv=10,scoring='accuracy')
+score_clf2=cross_val_score(SVC(),X_st,Y,cv=10,scoring='f1')
+score_clf3=cross_val_score(KNeighborsClassifier(),X_st,Y,cv=10,scoring='f1')
+score_clf4=cross_val_score(GradientBoostingClassifier(),X,Y,cv=10,scoring='accuracy')
+score_clf5=cross_val_score(XGBClassifier(),X_st,Y,cv=10,scoring='f1')
+score_clf6=cross_val_score(LogisticRegression(),X_st,Y,cv=10,scoring='f1')
+print(score_clf1.mean(),
+      score_clf2.mean(),
+      score_clf3.mean(),
+      score_clf4.mean(),
+      score_clf5.mean(),
+      score_clf6.mean())
+'''
+#GradientBoostingClassifier看起来是最优，看下混淆矩阵
+
+def report(X,Y):
+    x_train,x_test,y_train,y_test=train_test_split(X,Y,test_size=0.3,random_state=1)
+    clf=GradientBoostingClassifier().fit(x_train,y_train)
+    y_pred=clf.predict(x_test)
+    confusion_matrix(y_test,y_pred)
+    print(classification_report(y_test,y_pred))
+    print(accuracy_score(y_test,y_pred))
+    print(roc_auc_score(y_test,y_pred))
+
+
+c1=data_7['pay_price'].groupby(data.pay_price).count()
+c2=data_7_0['pay_price'].groupby(data.pay_price).count()
+c3=data_7_45['pay_price'].groupby(data.pay_price).count()
+   
+c=pd.DataFrame({1:c1,2:c2/c1})
+#发现0.99元中1W5人中仅10%后续付款，尝试再次拆分
+data2_7=data1_7[data1_7.pay_price>0.99]
+X2=data2_7.iloc[:,0:106]
+Y2=data2_7.iloc[:,106]
+
+y_pred2=report(X2,Y2)
+
+data2_099=data1_7[data1_7.pay_price==0.99]
+X2_099=data2_099.iloc[:,0:106]
+Y2_099=data2_099.iloc[:,106]
+X=pd.concat([X2,X2_099])
+Y=pd.concat([Y2,Y2_099])
+
+classification_report()
+
+
+分类问题思路
+#-------------增加单词付款金额   提升分类精度
+
+X=data_7.iloc[:,2:108]
+Y=data1_7['prediction_pay']
+
+X['pre_pay']=X['pay_price']/X['pay_count']
+#-------------两个特征简单计算的新特征并没能提升精度
+
+#-------------试试pca
+X=data1_7.drop(['prediction_pay'],axis=1)
+
+
+    SK=SelectKBest(chi2,k=90)
+    X_new=SK.fit_transform(data1_7.iloc[:,0:106],Y)
+    print(i)
+    
+for i in range(1,10):
+    pc=PCA(n_components='mle')
+    x_new=pc.fit_transform(X)
+    print(i/10)    
+    report(x_new,Y)、、
+#---------pca没有提升
+    
+#---------模型筛选试试
+from sklearn.feature_selection import SelectFromModel
+
+clf=RandomForestClassifier(n_estimators=100)
+clf=clf.fit(X,Y)
+print(clf.feature_importances_)
+SF=SelectFromModel(clf,prefit=True)
+X_new=SF.transform(X)
+
+clf1=LogisticRegression(penalty='l1')
+clf1=clf1.fit(X,Y)
+SF1=SelectFromModel(clf1,prefit=True)
+X_new=SF1.transform(X)
+report(X_new,Y)
+    
+#---------RFE（递归特征消除法）（据说rfecv可以通过rfe的交叉验证达到选择最优特征数量的功能）
+from sklearn.feature_selection import RFE
+X_new=RFE(estimator=RandomForestClassifier(), n_features_to_select=20).fit_transform(X,Y)
+report(X_new,Y)
+#--------------
+from sklearn.preprocessing import MinMaxScaler
+X=MinMaxScaler().fit_transform(X)
+x1=X[['avg_online_minutes','pay_price','pay_count']][Y==0]
+x2=X[['avg_online_minutes','pay_price','pay_count']][Y==1]
+x1=MinMaxScaler().fit_transform(x1)
+x2=MinMaxScaler().fit_transform(x2)
+for i in range(len(X)):
+    plt.plot(x1[i],'r')
+plt.show()
+for i in range(len(X)):
+    plt.plot(x2[i],'g')
+plt.show()
+
+clf=GradientBoostingClassifier().fit(X,Y)
+#####################################分类问题暂无提升
+#-----------回归问题
+
+data_re=data_7_45.drop(['锘縰ser_id','register_time'],axis=1)
+
+x_re=data_re.iloc[:,0:106]
+y_re=data_re.iloc[:,106]
+y_diff=y_re-x_re.pay_price
+
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.svm import SVR
+from sklearn.metrics import mean_squared_error
+
+st_re=StandardScaler().fit(x_re,y_re)
+x_re_new=st_re.transform(x_re)
+x_re_train,x_re_test,y_re_train,y_re_test=train_test_split(x_re,y_re,test_size=0.2,random_state=1)
+rgs1=RandomForestRegressor(n_estimators=100)
+rgs2=GradientBoostingRegressor()
+rgs3=LinearRegression()
+
+R1=rgs3.fit(x_re_train,y_re_train)
+y_re_pred=R1.predict(x_re_test)
+print(mean_squared_error(y_re_test,y_re_pred))
+#734135 baseline
+
+#-------------------根据稀疏性分割X，稀疏特征集先进线性模型，然后输出与稠密特征进树
+#看下各特征的稀疏性
+for i in x_re.columns:
+    print(i,len(x_re[x_re[i]==0]))
+    
+#观察高稀疏特征与目标值的相关性
+corr=data_7_45.corr()['prediction_pay_price']
+
+sparse_list=[]
+dense_list=[]
+#构建系数特征组
+for i in x_re.columns:
+    if len(x_re[x_re[i]==0])>8000:
+        sparse_list.append(i)
+    else:
+        dense_list.append(i)
+x_sparse=x_re[sparse_list]
+lr=LinearRegression().fit(x_re_train[sparse_list].iloc[0:4000,:],y_re_train.iloc[0:4000])
+y_output=lr.predict(x_re[sparse_list])
+y_output=pd.DataFrame(y_output)
+y_output.index=x_re.index
+x_dense=pd.concat([x_re[dense_list],y_output],axis=1)
+cross_val_score(GradientBoostingRegressor(),x_re,y_re,cv=10,scoring='neg_mean_squared_error').mean()
+#此方法待定
+
+#-------------正常的特征选择
+
+cross_val_score(LinearRegression(),x_re_new,y_re,cv=10,scoring='neg_mean_squared_error').mean()#864416
+from sklearn.feature_selection import VarianceThreshold
+for i in range(1,10):
+    va=VarianceThreshold(threshold=i/10)
+    print(i/10)
+    x_re_new=va.fit_transform(x_re)
+    print(cross_val_score(GradientBoostingRegressor(),x_re_new,y_re,cv=5,scoring='neg_mean_squared_error').mean())
+#best i=0.48
+va=VarianceThreshold(threshold=0.48)
+x_re_new=va.fit_transform(x_re)
+
+from sklearn.feature_selection import SelectPercentile
+for i in range(1,11):
+    se=SelectPercentile(f_regression,percentile=25)
+    x_re_new2=se.fit_transform(x_re,y_re)
+    print(i*10,cross_val_score(GradientBoostingRegressor(),x_re_new2,y_re,cv=3,scoring='neg_mean_squared_error').mean())
+#-774208
+
+from sklearn.feature_selection import SelectFromModel
+xg=GradientBoostingRegressor()
+xg=xg.fit(x_re_new2,y_re)
+model=SelectFromModel(xg,prefit=True)
+x_re_new3=model.transform(x_re_new2)
+cross_val_score(GradientBoostingRegressor(),x_re_new3,y_re_log,cv=3,scoring='neg_mean_squared_error').mean()
+----------------MSE并没有下降很多
+#################################################
+----------------厚尾分布严重，充值几千的土豪玩家人数少金额大，对MSE影响严重，尝试用对数变换，这样尾没那么厚
+import math
+from math import e
+from math import exp
+
+def thislog(y_re):#取对数函数
+    y_re_log=[]
+    for i in y_re.index:
+        y_re_log.append(math.log(y_re.loc[i]))
+    y_re_log=pd.DataFrame(y_re_log)
+    return y_re_log
+x_re_train,x_re_test,y_re_train,y_re_test=train_test_split(x_re_new3,y_re,test_size=0.2,random_state=1)
+cross_val_score(GradientBoostingRegressor(),x_re_new3,y_re_log,cv=3,scoring='neg_mean_squared_error').mean()
+
+x_re_train,x_re_test,y_re_train_log,y_re_test_log=train_test_split(x_re_new3,y_re_log,test_size=0.2,random_state=1)
+Gr_log=GradientBoostingRegressor().fit(x_re_train,y_re_train_log)
+y_pred_log=Gr_log.predict(x_re_test)
+print(mean_squared_error(y_re_test_log,y_pred_log))
+
+def thisexp(y2_1):#取指数还原
+    y2_1=pd.DataFrame(y2_1)
+    for i,e in enumerate(y2_1):
+        y2_1.loc[1]=exp(y2_1.loc[1])
+    return y2_1
+
+print(mean_squared_error(y_re_test,y_pred_log1))   
+---------厚尾y取对数后mse降到了333693###############
+
+
+
+#--------------------回归，试试模型融合，stack
+from heamy.dataset import Dataset
+from heamy.estimator import Regressor,Classifier
+from heamy.pipeline import ModelsPipeline
+
+dataset=Dataset(X_train=x_re_train,y_train=y_re_train,X_test=x_re_test)
+
+model1=Regressor(dataset=dataset,estimator=GradientBoostingRegressor,name='gr')
+model2=Regressor(dataset=dataset,estimator=LinearRegression,name='lr')
+model3=Regressor(dataset=dataset,estimator=SVR,name='svr')
+pipline=ModelsPipeline(model1,model2,model3)
+stack_ds=pipline.stack(k=10,seed=2)
+
+stacker = Regressor(dataset=stack_ds, estimator=GradientBoostingRegressor)
+results = stacker.predict()
+
+results10 = stacker.validate(k=10,scorer=mean_squared_error)
+
+
+#----------试试多项式PolynomialFeature
+
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import Normalizer
+    '''y_re=y_re.iloc[:,1::]
+    xy=pd.concat([pd.DataFrame(x_re_1_new),y_re],axis=1)
+    xy.corr()['prediction_pay_price']'''
+x_re_1=x_re[['avg_online_minutes','pay_price']]
+for i in range(1,10):
+    poly=PolynomialFeatures(degree=i)
+    x_re_1_new=poly.fit_transform(x_re_1)
+    sco=cross_val_score(LinearRegression(),x_re_1_new,y_re,cv=10,scoring='neg_mean_squared_error').mean()
+    print(i,'%d'%(-sco))
+#最优的是'avg_online_minutes','pay_price'，5阶，但依然不理想，先组合提交看看
+
+x_re_1_best=poly=PolynomialFeatures(degree=5).fit_transform(x_re_1)
+lr=LinearRegression().fit(x_re_1_best,y_re)
+
+
+
+
+#-----回归问题-----拟合一下最小人数和最大金额量比的曲线
+from scipy import optimize
+from sklearn.metrics import mean_squared_error
+X=data_7_45[['pay_price','prediction_pay_price']].sort_values(by=['pay_price'],ascending=False)
+Y=X['prediction_pay_price']
+x=range(1,11310)
+y=[Y[0:i].values.sum() for i in range(1,len(Y)+1)]
+plt.plot(x,y,'o')
+plt.plot(x,yval)
+plt.show()
+for i in range(50):
+    z1=np.polyfit(x,y,i)
+    p1 = np.poly1d(z1)
+    yval=p1(x)
+    print(i,mean_squared_error(y,yval)/1e+10)
+#best i=32
+z1=np.polyfit(x,y,32)
+p1=np.poly1d(z1)
+p2=p1.deriv()#求导
+print(p2(y[11308]/11308))#=1925人掌握最多的付费
+p1(1925)#总计265W，45日付款金额298.7以上
+
+xx=X.sort_values(by='prediction_pay_price',ascending=False)
+xx=xx.reset_index()
+#尝试 对应45日付款298.7以上的玩家先拟合
+#--------------错误：不能以预测值预先分割客户----------------------
+
+
+
+
+
+
+#-=============分类，回归组合
+filetest=open(r'D:\Python\数据分析项目\机器学习\游戏玩家付费金额预测大赛\tap4fun竞赛数据\tap_fun_test.csv','r')
+datatest=pd.read_csv(filetest)
+datatest.columns
+xtest=datatest.iloc[:,2:108]
+xretest=datatest.iloc[:,105:107]
+
+#7日为0的，默认为0
+y1=xretest['pay_price'][xretest.pay_price==0]
+y1=pd.DataFrame(y1)
+y1.columns=['predict_pay_price']
+#7日大于0的，进分类
+xtest=xtest[xtest.pay_price>0]
+clf=GradientBoostingClassifier().fit(X,Y)
+y2=clf.predict(xtest)
+y2=pd.DataFrame(y2)
+y2.index=(xtest.index)
+y2.columns=['predict_pay_price']
+#分类为0的，结果等于7日
+y2_0=y2[y2.predict_pay_price==0]
+y2_0=xtest['pay_price'][y2_0.index]
+y2_0=pd.DataFrame(y2_0)
+y2_0.columns=['predict_pay_price']
+#分类为1的，进回归
+xy_7=pd.concat([xtest,y2],axis=1)
+xtest_45=xy_7[xy_7.predict_pay_price>0]
+xtest_45_1=xtest_45[['meat_add_value','training_acceleration_add_value','training_acceleration_reduce_value','pay_price']]
+lr=GradientBoostingRegressor().fit(x_re_new3,thislog(y_re))
+y2_1=lr.predict(xtest_45_1)
+y2_1=thisexp(y2_1)
+y2_1.columns=['predict_pay_price']
+y2_1.index=xtest_45.index
+
+最终组合
+Ytest=pd.concat([y1,y2_0,y2_1])
+data_final=pd.concat([datatest.user_id,Ytest],axis=1)
+data_final.columns=[['user_id','prediction_pay_price']]
+file_final=open(r'D:\Python\数据分析项目\机器学习\游戏玩家付费金额预测大赛\data_final1.csv','w')
+data_final.to_csv(file_final,index=0)
+file_final.close()
