@@ -1,0 +1,652 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec 25 11:01:47 2018
+
+@author: YJL
+"""
+
+
+import pandas as pd
+import numpy as np 
+from matplotlib import pyplot as plt
+from sklearn.feature_selection import SelectPercentile,chi2
+from sklearn.feature_selection import SelectFromModel
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
+from xgboost import XGBClassifier 
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier 
+import pickle
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier 
+import featuretools as ft 
+#导入数据，共六张表
+
+#申请主表
+f1=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\application_train.csv','r')
+data_application=pd.read_csv(f1)
+f1.close()
+#征信表
+f2=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\bureau.csv','r')
+data_bureau=pd.read_csv(f2)
+f2.close()
+#征信余额
+f3=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\bureau_balance.csv','r')
+data_bureau2=pd.read_csv(f3)
+f3.close()
+#信用卡
+f4=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\credit_card_balance.csv','r')
+data_card=pd.read_csv(f4)
+f4.close()
+#分期记录
+f5=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\installments_payments.csv','r')
+data_installment=pd.read_csv(f5)
+f5.close()
+#消费记录
+f6=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\POS_CASH_balance.csv','r')
+data_pos=pd.read_csv(f6)
+f6.close()
+#历史申请
+f7=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\previous_application.csv','r')
+data_prev=pd.read_csv(f7)
+f7.close()
+
+#----------------------------------------------------------------------------------
+#预测数据
+ff1=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\application_test.csv','r')
+data_application1=pd.read_csv(ff1)
+ff1.close()
+#征信表
+Y=data_application['TARGET'].iloc[0:300000]
+data_application=data_application.drop(['TARGET'],axis=1)
+
+#-----------------------------------------------------
+#缺失值检查函数
+def missing_values_table(df):
+        # Total missing values
+        mis_val = df.isnull().sum()
+        
+        # Percentage of missing values
+        mis_val_percent = 100 * df.isnull().sum() / len(df)
+        
+        # Make a table with the results
+        mis_val_table = pd.concat([mis_val, mis_val_percent], axis=1)
+        
+        # Rename the columns
+        mis_val_table_ren_columns = mis_val_table.rename(
+        columns = {0 : 'Missing Values', 1 : '% of Total Values'})
+        
+        # Sort the table by percentage of missing descending
+        mis_val_table_ren_columns = mis_val_table_ren_columns[
+            mis_val_table_ren_columns.iloc[:,1] != 0].sort_values(
+        '% of Total Values', ascending=False).round(1)
+        
+        # Print some summary information
+        print ("Your selected dataframe has " + str(df.shape[1]) + " columns.\n"      
+            "There are " + str(mis_val_table_ren_columns.shape[0]) +
+              " columns that have missing values.")
+        
+        # Return the dataframe with missing information
+        return mis_val_table_ren_columns
+
+missing_values_table(data_application)
+#------------------------------------------------------
+
+#数据探索一：检查目标分布
+plt.hist(data_application.TARGET)#类别不平衡，考虑过采样
+
+#数据探索二：类别特征与连续特征
+data_application.dtypes
+label_counts=data_application.select_dtypes('object').apply(pd.Series.nunique,axis=0)
+#两类别的用分类编码，多类别用独热编码
+le=LabelEncoder()
+for col in data_application:
+    print(col)
+    if data_application[col].dtype=='object':
+        print('yes')
+        if len(data_application[col].unique())<=2:
+            print('y')
+            le=le.fit(data_application[col])
+            data_application[col]=le.transform(data_application[col])
+            print(col)
+            
+data_application1=pd.get_dummies(data_application)
+#插补空值
+
+data_application=data_application.drop(['TARGET'],axis=1)
+X_total=pd.concat([data_application,data_application1])
+X_total=pd.get_dummies(X_total)
+X_total.index=pd.concat([data_application.SK_ID_CURR,data_application1.SK_ID_CURR])
+Y=data_application['TARGET']
+Y.index=data_application.SK_ID_CURR
+
+#baseline
+
+
+baseline=cross_val_score(LogisticRegression(),X,Y,cv=5,scoring='roc_auc')
+print('baseline:%f'% baseline.mean())
+
+RF=RandomForestClassifier().fit(X,Y)
+RF.feature_importances_
+pd.DataFrame({'feature':X.columns,'importance':RF.feature_importances_}).sort_values('importance')
+
+----------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------
+
+#【特征预处理模块】特征构建--手工特征集
+
+#application
+#贷款/收入、月供/收入、月供/贷款、收入人口密度比、年龄收入比、年龄负债比、工龄收入比负债比、
+feautre_domain1=pd.DataFrame(data_application['AMT_CREDIT']/data_application['AMT_INCOME_TOTAL'],index=X.index)
+feautre_domain2=pd.DataFrame(data_application['AMT_ANNUITY']/data_application['AMT_INCOME_TOTAL'],index=X.index)
+feautre_domain3=pd.DataFrame(data_application['AMT_ANNUITY']/data_application['AMT_CREDIT'],index=X.index)
+feautre_domain4=pd.DataFrame(data_application['AMT_INCOME_TOTAL']/data_application['REGION_POPULATION_RELATIVE'],index=X.index)
+feautre_domain5=pd.DataFrame(data_application['AMT_INCOME_TOTAL']/data_application['DAYS_BIRTH'],index=X.index)
+feautre_domain6=pd.DataFrame(data_application['AMT_CREDIT']/data_application['DAYS_BIRTH'],index=X.index)
+feautre_domain7=pd.DataFrame(data_application['AMT_CREDIT']/data_application['DAYS_BIRTH'],index=X.index)
+feautre_domain8=pd.DataFrame(data_application['DAYS_EMPLOYED']/data_application['DAYS_BIRTH'],index=X.index)
+feautre_domain1.columns=['domain1']
+feautre_domain2.columns=['domain2']
+feautre_domain3.columns=['domain3']
+feautre_domain4.columns=['domain4']
+feautre_domain5.columns=['domain5']
+feautre_domain6.columns=['domain6']
+feautre_domain7.columns=['domain7']
+feautre_domain8.columns=['domain8']
+
+#bureau
+'''data_application['SK_ID_CURR'][data_bureau['SK_ID_CURR'].unique()].count()
+data_bureau.describe()
+'''
+#空值处理，填充0
+data_bureau=data_bureau.fillna(0)
+data_bureau.isnull()
+#数据透视，生成新特征
+feature_bureau1 = data_bureau.iloc[:,0:2].groupby('SK_ID_CURR').count()                                #征信数
+feature_bureau1.columns=['bureau_count']
+feature_bureau2 = data_bureau.iloc[:,[0,2]][data_bureau.CREDIT_ACTIVE==0].groupby('SK_ID_CURR').count()#激活的征信数
+feature_bureau2.columns=['active_count']
+feature_bureau3 = data_bureau.iloc[:,[0,4]].groupby('SK_ID_CURR').min()                                #征信最长时间
+feature_bureau3.columns=['bureau_long']
+feature_bureau4 = data_bureau.iloc[:,[0,5]].groupby('SK_ID_CURR').max()#历史逾期最大天数
+feature_bureau4.columns=['bureau_overduedays']
+feature_bureau5 = data_bureau.iloc[:,[0,8]].groupby('SK_ID_CURR').sum()#逾期金额
+feature_bureau5.columns=['overdue_sum']
+feature_bureau6 = data_bureau.iloc[:,[0,9]].groupby('SK_ID_CURR').sum()#逾期次数
+feature_bureau6.columns=['overdue_count']
+feature_bureau7 = data_bureau.iloc[:,[0,10]][data_bureau.CREDIT_ACTIVE==0].groupby('SK_ID_CURR').sum()#在用最大信用额度
+feature_bureau7.columns=['credit_sum']
+feature_bureau8 = data_bureau.iloc[:,[0,11]].groupby('SK_ID_CURR').sum()#负债总额
+feature_bureau8.columns=['debt_sum']
+feature_bureau9 = data_bureau.iloc[:,[0,12]].groupby('SK_ID_CURR').sum()#限额总额
+feature_bureau9.columns=['limit_sum']
+feature_bureau10 = data_bureau.iloc[:,[0,13]].groupby('SK_ID_CURR').sum()#逾期总额
+feature_bureau10.columns=['overdue_sum']
+
+feature_bureau11=pd.get_dummies(data_bureau.CREDIT_TYPE)#各类型贷款数量
+feature_bureau11['SK_ID_CURR']=data_bureau['SK_ID_CURR']
+feature_bureau11=feature_bureau11.groupby('SK_ID_CURR').sum()
+
+feature_bureau12 = data_bureau.iloc[:,[0,15]].groupby('SK_ID_CURR').max()#最近一次修改信息的时间
+feature_bureau12.columns=['update_time']
+feature_bureau13 = data_bureau.iloc[:,[0,16]].groupby('SK_ID_CURR').sum()#月还款
+feature_bureau13.columns=['ANNUITY']
+
+
+#bureau_balance
+data_bureau2.isnull().sum()
+data_bureau21 = pd.merge(data_bureau[['SK_ID_CURR','SK_ID_BUREAU']],data_bureau2,how='right',on='SK_ID_BUREAU')
+feature_balance1= data_bureau21.iloc[:,[0,3]][(data_bureau21['STATUS']!='X')&(data_bureau21['STATUS']!='C')].groupby('SK_ID_CURR').max()#历史逾期最大天数
+feature_balance2= data_bureau21.iloc[:,[0,3]][(data_bureau21['STATUS']!='X')&(data_bureau21['STATUS']!='C')&(data_bureau21['STATUS']!=0)].groupby('SK_ID_CURR').count()#历史逾期最大天数
+feature_balance1.columns=['balance1']
+feature_balance2.columns=['balance2']
+#previous_application(时间属性缺失说明，未采用)
+data_prev.isnull().sum()
+data_prev=data_prev.drop(['RATE_INTEREST_PRIMARY','RATE_INTEREST_PRIVILEGED'],1)
+data_prev['FLAG_LAST_APPL_PER_CONTRACT']=le.fit_transform(data_prev['FLAG_LAST_APPL_PER_CONTRACT'])
+
+data_prev1=pd.get_dummies(data_prev)
+
+data_prev1=data_prev1.fillna(0)
+
+feature_prev1=pd.concat([data_prev1.iloc[:,1:9],data_prev1.iloc[:,18::]],1).groupby('SK_ID_CURR').sum()
+feature_prev1.columns=feature_prev1.columns+'a'
+
+#POS_CASH_balance
+data_pos=pd.get_dummies(data_pos)
+feature_pos1=data_pos.iloc[:,[0,1]].groupby('SK_ID_CURR').count()#总分期个数
+feature_pos2=data_pos.iloc[:,[1,4]][data_pos.CNT_INSTALMENT_FUTURE>0].groupby('SK_ID_CURR').count()#待还的分期个数
+feature_pos3=data_pos.iloc[:,[1,5,6]].groupby('SK_ID_CURR').max()#最长逾期天数
+feature_pos4=pd.concat([data_pos.iloc[:,1],data_pos.iloc[:,7::]],1).groupby('SK_ID_CURR').sum()#各贷款类型数量
+feature_pos1.columns=['pos1']
+feature_pos2.columns=['pos2']
+feature_pos3.columns=['pos3','pos4']
+feature_pos4.columns+='1'
+
+#credit_card_balance
+data_card=pd.get_dummies(data_card)
+data_card=data_card.drop(['MONTHS_BALANCE'],1)
+feature_card=data_card.iloc[:,1::].groupby('SK_ID_CURR').sum()
+feature_card.columns+='2'
+
+#installments_payments
+feature_installment=data_installment.iloc[:,[1,3,6,7]].groupby('SK_ID_CURR').sum()
+feature_installment.columns+='3'
+
+
+#合并特征
+X_total1=X_total
+for i in [feature_balance1,feature_balance2,feature_bureau1,feature_bureau2,feature_bureau3,
+          feature_bureau4,feature_bureau5,feature_bureau6,feature_bureau7,feature_bureau8,
+          feature_bureau9,feature_bureau10,feature_bureau11,feature_bureau12,feature_bureau13,
+          feature_card,feature_installment,feature_pos1,feature_pos2,feature_pos3,feature_pos4,
+          feature_prev1,feautre_domain1,feautre_domain2,feautre_domain3,feautre_domain4,
+          feautre_domain5,feautre_domain6,feautre_domain7,feautre_domain8]:
+    X_total1=pd.merge(X_total1,i,how='left',left_index = True,right_index=True)
+X_total1=X_total1.fillna(0)
+
+X_total1['balance1']=X_total1['balance1'].astype('int')
+
+#【预处理模块结束】
+--------------------------------------------------------------------------------
+
+'''
+#全特征入模型
+from xgboost import XGBClassifier
+score=cross_val_score(XGBClassifier(),X1,Y,cv=5,scoring='roc_auc')
+print(score.mean())
+#全特征，auc=0.76060
+'''
+
+------------------------------------------------------------------------------
+#记录train的成果数据集
+X_train=X_total1[X_total1.index.isin(data_application.SK_ID_CURR)]
+Y_train=Y
+
+X_test=X_total1[X_total1.index.isin(data_application1.SK_ID_CURR)]
+X_train.columns==X_test.columns
+
+XG1=XGBClassifier().fit(X_train,Y_train)
+y_pred=XG1.predict_proba(X_test)
+y_pred1=
+
+result=pd.DataFrame([X_test.index,y_pred[:,1]]).T
+f_res=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\result1.csv','w')
+result.to_csv(f_res,index=0)
+f_res.close
+#0.749
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+import featuretools as ft#特征构建自动化模块-----自动特征集
+
+'''
+建立实体集的复杂方法
+#1.创建实体集，一个实体就是一个表或者说Dataframe，实体集是一组这样的表并把关系表示出来
+es=ft.EntitySet(id='SK_ID_CURR')
+
+
+#2.往实体集里放入每个实体,每个实体指定唯一的索引
+es=es.entity_from_dataframe(entity_id='application',dataframe=pd.get_dummies(X_total),index='SK_ID_CURR')
+es=es.entity_from_dataframe(entity_id='bureau',dataframe=pd.get_dummies(data_bureau),index='SK_ID_BUREAU')
+es=es.entity_from_dataframe(entity_id='bureau2',dataframe=pd.get_dummies(data_bureau2),make_index=True,index='ID_BUREAU2')
+es=es.entity_from_dataframe(entity_id='card',dataframe=pd.get_dummies(data_card),make_index=True,index='ID_CARD')
+es=es.entity_from_dataframe(entity_id='installment',dataframe=pd.get_dummies(data_installment),make_index=True,index='ID_INSTALLMENT')
+es=es.entity_from_dataframe(entity_id='pos',dataframe=pd.get_dummies(data_pos),make_index=True,index='ID_POS')
+es=es.entity_from_dataframe(entity_id='prev',dataframe=pd.get_dummies(data_prev),index='SK_ID_PREV')
+
+#3.往实体集中添加关联，父子实体之间两两用父索引连接
+r1=ft.Relationship(es['application']['SK_ID_CURR'],es['bureau']['SK_ID_CURR'])
+r2=ft.Relationship(es['bureau']['SK_ID_BUREAU'],es['bureau2']['SK_ID_BUREAU'])
+r3=ft.Relationship(es['application']['SK_ID_CURR'],es['prev']['SK_ID_CURR'])
+r4=ft.Relationship(es['prev']['SK_ID_PREV'],es['card']['SK_ID_PREV'])
+r5=ft.Relationship(es['prev']['SK_ID_PREV'],es['installment']['SK_ID_PREV'])
+r6=ft.Relationship(es['prev']['SK_ID_PREV'],es['pos']['SK_ID_PREV'])
+
+es=es.add_relationship(r1)
+es=es.add_relationship(r2)
+es=es.add_relationship(r3)
+es=es.add_relationship(r4)
+es=es.add_relationship(r5)
+es=es.add_relationship(r6)
+
+#4.生成新的特征，转换基元trans_primitives、聚合基元agg_primitives可选；也可自动
+feature,featurename=ft.dfs(entityset=es,target_entity='application')
+feature.head()
+
+#```````````````````````````````````````````````````````````````````````````````````````
+直接训练实体、关系的简易方法
+
+es1={"application":(X_total,"SK_ID_CURR"),'bureau':(data_bureau,"SK_ID_BUREAU")}
+#构建关系
+re=[('application','SK_ID_CURR','bureau','SK_ID_CURR')]
+#放一起
+feature,featurename=ft.dfs(entities=es1,relationships=re,target_entity="application")
+'''
+========================================================================================
+#两个实体
+feature1=pd.get_dummies(feature)
+
+
+X_train=feature1[feature1.index.isin(data_application.SK_ID_CURR)]
+Y_train=data_application.iloc[:,1]
+
+X_test=feature1[feature1.index.isin(data_application1.SK_ID_CURR)]
+
+
+XG2=XGBClassifier().fit(X_train,Y_train)
+y_pred=XG2.predict_proba(X_test)
+
+res=pd.DataFrame([X_test.index,y_pred[:,1]]).T
+res.columns=['SK_ID_CURR','TARGET']
+res['SK_ID_CURR']=res['SK_ID_CURR'].astype(int)
+
+fff=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\result2.csv','w')
+res.to_csv(fff,index=0)
+fff.close()
+#两个实体 0.742
+####################################################################################
+#全实体测试
+#建个实体集es创建函数，进实体前先onehot编码
+def escreate(df):
+    data_application_s=pd.get_dummies(df)
+    data_bureau_s=pd.get_dummies(data_bureau[data_bureau.SK_ID_CURR.isin(data_application_s.SK_ID_CURR)])
+    data_bureau2_s=pd.get_dummies(data_bureau2[data_bureau2.SK_ID_BUREAU.isin(data_bureau_s.SK_ID_BUREAU)])
+    data_prev_s=pd.get_dummies(data_prev[data_prev.SK_ID_CURR.isin(data_application_s.SK_ID_CURR)])
+    data_card_s=pd.get_dummies(data_card[data_card.SK_ID_PREV.isin(data_prev_s.SK_ID_PREV)])
+    data_installment_s=pd.get_dummies(data_installment[data_installment.SK_ID_PREV.isin(data_prev_s.SK_ID_PREV)])
+    data_pos_s=pd.get_dummies(data_pos[data_pos.SK_ID_PREV.isin(data_prev_s.SK_ID_PREV)])
+
+    es=ft.EntitySet(id='SK')
+    es=es.entity_from_dataframe(entity_id='application',dataframe=data_application_s,index='SK_ID_CURR')
+    es=es.entity_from_dataframe(entity_id='bureau',dataframe=data_bureau_s,index='SK_ID_BUREAU')
+    es=es.entity_from_dataframe(entity_id='bureau2',dataframe=data_bureau2_s,make_index=True,index='bureau2_id')
+    es=es.entity_from_dataframe(entity_id='prev',dataframe=data_prev_s,index='SK_ID_PREV')
+    es=es.entity_from_dataframe(entity_id='card',dataframe=data_card_s,make_index=True,index='card_id')
+    es=es.entity_from_dataframe(entity_id='pos',dataframe=data_pos_s,make_index=True,index='pos_id')
+    es=es.entity_from_dataframe(entity_id='installment',dataframe=data_installment_s,make_index=True,index='installment_id')
+    
+    r1=ft.Relationship(es['application']['SK_ID_CURR'],es['bureau']['SK_ID_CURR'])
+    r2=ft.Relationship(es['bureau']['SK_ID_BUREAU'],es['bureau2']['SK_ID_BUREAU'])
+    r3=ft.Relationship(es['application']['SK_ID_CURR'],es['prev']['SK_ID_CURR'])
+    r4=ft.Relationship(es['prev']['SK_ID_PREV'],es['card']['SK_ID_PREV'])
+    r5=ft.Relationship(es['prev']['SK_ID_PREV'],es['installment']['SK_ID_PREV'])
+    r6=ft.Relationship(es['prev']['SK_ID_PREV'],es['pos']['SK_ID_PREV'])
+    
+    es=es.add_relationship(r1)
+    es=es.add_relationship(r2)
+    es=es.add_relationship(r3)
+    es=es.add_relationship(r4)
+    es=es.add_relationship(r5)
+    es=es.add_relationship(r6)
+    
+    return es
+--------------------------------------------------------------------
+'''
+Y=feature.TARGET
+feature=feature.drop(['TARGET'],axis=1)
+
+feature=pd.get_dummies(feature)
+feature.isnull().sum()
+
+#缺失值处理函数
+missing_values_table(feature,print_info=False)
+remove_missing_columns()
+
+feature=feature.fillna(0)
+
+#特征筛选
+from sklearn.feature_selection import SelectPercentile,chi2
+
+from sklearn.feature_selection import SelectFromModel
+from sklearn.ensemble import RandomForestClassifier
+rf=XGBClassifier().fit(feature,Y)
+a=rf.feature_importances_
+sf=SelectFromModel(estimator=rf,prefit=True)
+X=sf.transform(feature)
+
+x1=pd.DataFrame(X)
+x1.columns=feature.columns[sf.get_support()]
+xg=XGBClassifier().fit(x1,Y)
+x11=pd.DataFrame(data=xg.feature_importances_.T,index=x1.columns)
+x11.sort_values(by=0,ascending=False)
+
+from lightgbm import LGBMClassifier
+s1=cross_val_score(LGBMClassifier(),X,Y,cv=10,scoring='roc_auc')
+print(s1.mean())
+#0.757
+'''
+===============================================================================
+#ft.save_features()  ft.load_features()  calculate_feature_matrix()  实现复用！！！！！
+#考虑计算量巨大，先使用前2W样本计算出特征变换矩阵
+df=data_application.iloc[0:20000,:]
+es=escreate(df)#创建实体
+#指定基元，可以减少计算量
+agg_primitives =  ["sum", "max", "min", "mean", "count", "STD", "skew", "mode"]
+trans_primitives = ['percentile', 'and']
+feature1,featurename1=ft.dfs(entityset=es,target_entity='application',
+                           agg_primitives = agg_primitives,
+                           trans_primitives = trans_primitives,
+                            n_jobs = 1, verbose = 1, 
+                            max_depth = 2)
+#2w样本先做特征筛选
+#去掉空值占70%以上的特征
+feature2=feature1[feature1.columns[feature1.isnull().sum()/20000<0.7]]
+#使用模型方法特征筛选
+feature3=feature2.fillna(0)#考虑很多特征的实际意义，将空值用0插补更合理一些
+y=data_application['TARGET'][0:20000]
+lgb=LGBMClassifier()
+model=SelectFromModel(lgb,max_feature=300).fit(feature3,y)
+feature4=model.transform(feature3)
+feature_columns1=list(feature3.columns[model.get_support()])
+#筛选出前300特征
+feature_columns2=list(feature3.columns[model.get_support()])#同理得出前600项，用以测试
+feature_columns3=list(feature3.columns[model.get_support()])#前900项
+feature_columns4=list(feature3.columns[model.get_support()])#1070项
+
+#保存各个特征名列表
+f1=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature1.pickle','wb')
+pickle.dump(feature_columns1,f1)
+f2=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature2.pickle','wb')
+pickle.dump(feature_columns2,f2)
+f3=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature3.pickle','wb')
+pickle.dump(feature_columns3,f3)
+f4=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature4.pickle','wb')
+pickle.dump(feature_columns4,f4)
+f1.close()
+f2.close()
+f3.close()
+f4.close()
+
+#保存自动特征的变换函数defs（包含列名、基元、转换顺序等信息），格式虽然是list，但无法用pickle，需要用路径拼接os配合ft的函数save_features保存
+import os
+path='D:\Python\数据分析项目\机器学习\Home Credit Default Risk'
+filepath=os.path.join(path,'defs300')#路径拼接函数
+
+ft.save_features(defs300,filepath)
+
+#读取defs
+defs_all=ft.load_features(filepath)
+
+#读取特征列表
+f1=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature1.pickle','rb')
+columns300=pickle.load(f1)
+
+#从6000+的特征集合一样找出对应筛选剩下的300、600、900、1100+特征,（处理defs比较麻烦，只能想到for循环逐个判断）
+#特证名是其中一项，筛选的话采用提取特征名内容匹配筛选
+#正则表达式从ft的defs中抽取所有columns名
+import re
+path=': (.*?)>'
+columns_all=[]
+for i in range(len(defs_all)):
+    a=re.compile(path).findall(str(defs_all[i]))
+    columns_all.extend(a)
+print('完成'+str(i))
+
+#逐条对比，从原始defs筛选出特征列表对应的defs
+def featureselect(column,defs_all): 
+        defs=[]
+        for i in range(len(defs_all)):
+            if pd.Series(columns_all).isin(columns300)[i]==True:
+                defs.append(defs_all[i])
+                print(i)       
+        print(len(defs))
+        return defs
+
+es=escreate(X_total.iloc[0:100000,:])
+
+feature_300d_2000s=ft.calculate_feature_matrix(featurename2,entityset=es,verbose=1)
+feature_300d_10w=ft.calculate_feature_matrix(featurename2,entityset=es,verbose=1)
+
+X=pd.concat([feature_300d_2000s,feature_300d_10w])
+Y=data_application['TARGET'].iloc[0:100000]
+
+score1=cross_val_score(LGBMClassifier(),X,Y,cv=5,scoring='roc_auc').mean()
+#10W样本 300列  0.7621
+
+#10W样本 600列
+f2=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature2.pickle','rb')
+feature_600=pickle.load(f2)
+feature_600ft=featureselect(feature_600)
+es_600=escreate(X_total.iloc[0:100000,:])
+feature_600res=ft.calculate_feature_matrix(feature_600ft,entityset=es_600,verbose=1)
+score2=cross_val_score(LGBMClassifier(),feature_600res,Y,cv=5,scoring='roc_auc').mean()
+#10W样本 600列  0.7619   并无明显提升。无法承担过大数据集，就用300维的特征
+----------------------------------------------------------------------------------
+#增加样本量
+f2=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature1.pickle','rb')
+es_300=escreate(data_application.iloc[0::150000,:])
+defs300=featureselect(columns300,defs_all)
+feature_300res=ft.calculate_feature_matrix(defs300,entityset=es_300,verbose=1)
+score2=cross_val_score(LGBMClassifier(),feature_600res,Y,cv=5,scoring='roc_auc').mean()
+
+es_300x=escreate(data_application.iloc[150000:300000,:])=featureselect(columns300,defs_all)
+feature_300xres=ft.calculate_feature_matrix(defs300,entityset=es_300x,verbose=1)
+
+feature_final=pd.concat([feature_300res,feature_300xres])
+Y=Y.iloc[0:300000]
+score_final=cross_val_score(LGBMClassifier(),feature_final,Y,cv=5,scoring='roc_auc').mean()
+#0.777,有所提升
+
+#提交一次结果
+lgb=LGBMClassifier().fit(feature_final,Y)
+#保存一下模型
+f_model=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\model_LGBM.pickle','wb')
+pickle.dump(lgb,f_model)
+f_model.close
+#保存下数据集
+f_feature=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature30W300.pickle','wb')
+pickle.dump(feature_final,f_feature)
+f_feature.close
+
+#转换test
+
+    es1=escreate(data_application1)
+    feature=ft.calculate_feature_matrix(defs_300,entityset=es1,verbose=1)
+f_test=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\feature_test300.pickle','wb')
+pickle.dump(feature,f_test)
+f_test.close()
+
+    
+def testresult(feature,lgb):
+    res=lgb.predict_proba(feature)    
+    res=res[:,1]
+    res_df=pd.concat([data_application1['SK_ID_CURR'],pd.Series(res)],axis=1)
+    res_df.columns=['SK_ID_CURR','TARGET']
+    f_res2=open(r'D:\Python\数据分析项目\机器学习\Home Credit Default Risk\res3.csv','w')
+    res_df.to_csv(f_res2,index=0)
+    f_res2.close()
+    print('csv文件完成')
+#kaggle得分0.76787
+
+
+======================================================================================
+#过采样
+from imblearn.combine import SMOTEENN
+
+x_new,y_new=SMOTEENN(random_state=1).fit_sample(feattureall,Y)
+x_new3=pd.DataFrame(x_new2,columns=xnew_test.columns)
+#过采样后lgb auc得分0.86 kaggle0.763反而下降了
+
+#缺失值处理
+def miss(feattureall):
+    for i in feattureall.columns:
+        print (i)
+        feattureall[i]=feattureall[i].fillna(feattureall[i].median())
+    return feattureall
+featureall_1=miss(feattureall)
+featureall_1.isnull().sum()
+score2=cross_val_score(XGBClassifier(),feattureall,Y,cv=5,scoring='roc_auc').mean()
+#没有过采样的LGB 0.775    XGB 0.767
+=====================================================================================
+#模型调参,hyperopt
+from  hyperopt    import fmin, tpe, hp, rand
+from sklearn.metrics import roc_auc_score
+from math import e
+
+#构造分布空间
+parm_span_dict_LGB={'boosting_type':hp.choice('boosting_type',['gbdt','dart']),
+                'num_leaves':hp.choice('num_leaves',range(8,256)),
+                'max_depth':hp.choice('max_depth',range(3,8)),
+                'learning_rate':hp.loguniform('learning_rate',np.log(0.01),np.log(0.3)),
+                'n_estimators':hp.choice('n_estimators',range(1,1000)),
+                'min_split_gain':hp.loguniform('min_split_gain',np.log(0.01),np.log(0.3)),
+                'min_child_samples':hp.choice('min_child_samples',range(5,50)),
+                'subsample':hp.loguniform('subsample',np.log(0.5),np.log(0.99)),
+                'subsample_freq':hp.choice('subsample_freq',[0,hp.choice('subsample_freq1',range(3,5))]),
+                'colsample_bytree':hp.loguniform('colsample_bytree',np.log(0.5),np.log(0.9)),
+                'reg_alpha':hp.loguniform('reg_alpha',np.log(0.001),np.log(1.0)),
+                'reg_lambda':hp.loguniform('reg_lambda',np.log(0.001),np.log(1.0)),
+              }
+#构造loss函数
+count = 0
+def function(args):
+    print(args)
+    # **可以把dict转换为关键字参数，可以大大简化复杂的函数调用
+    # 预测测试集
+    global count
+    print("第%s次计算开始" % str(count+1))
+    score=cross_val_score(LGBMClassifier(**args),feattureall,Y,cv=5,scoring='roc_auc').mean()
+
+    count = count + 1
+    print("第%s次，测试集正确率为：" % str(count),score)
+
+    # 由于hyperopt仅提供fmin接口，因此如果要求最大值，则需要取相反数
+    return -score
+
+best = fmin(function,parm_span_dict_LGB, algo=tpe.suggest, max_evals=5000)
+
+function({'boosting_type': 'gbdt',
+ 'colsample_bytree': 0.5534636100497718,
+ 'learning_rate': 0.014776851164205145,
+ 'max_depth': 3,
+ 'min_child_samples': 44,
+ 'min_split_gain': 0.010625592206904878,
+ 'n_estimators': 890,
+ 'num_leaves': 116,
+ 'reg_alpha': 0.6519518218697768,
+ 'reg_lambda': 0.8729209080028053,
+ 'subsample': 0.5003590498688634,
+ 'subsample_freq': 1,
+ 'subsample_freq1': 0})
+
+args={'boosting_type': 'gbdt',
+ 'colsample_bytree': 0.5534636100497718,
+ 'learning_rate': 0.014776851164205145,
+ 'max_depth': 3,
+ 'min_child_samples': 44,
+ 'min_split_gain': 0.010625592206904878,
+ 'n_estimators': 890,
+ 'num_leaves': 116,
+ 'reg_alpha': 0.6519518218697768,
+ 'reg_lambda': 0.8729209080028053,
+ 'subsample': 0.5003590498688634,
+ 'subsample_freq': 1,
+ 'subsample_freq1': 0}    
+lgb=LGBMClassifier(**args).fit(feattureall,Y)
+
+testresult(feature,lgb)
