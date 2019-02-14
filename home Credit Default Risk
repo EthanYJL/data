@@ -620,20 +620,6 @@ def function(args):
 
 best = fmin(function,parm_span_dict_LGB, algo=tpe.suggest, max_evals=5000)
 
-function({'boosting_type': 'gbdt',
- 'colsample_bytree': 0.5534636100497718,
- 'learning_rate': 0.014776851164205145,
- 'max_depth': 3,
- 'min_child_samples': 44,
- 'min_split_gain': 0.010625592206904878,
- 'n_estimators': 890,
- 'num_leaves': 116,
- 'reg_alpha': 0.6519518218697768,
- 'reg_lambda': 0.8729209080028053,
- 'subsample': 0.5003590498688634,
- 'subsample_freq': 1,
- 'subsample_freq1': 0})
-
 args={'boosting_type': 'gbdt',
  'colsample_bytree': 0.5534636100497718,
  'learning_rate': 0.014776851164205145,
@@ -647,6 +633,10 @@ args={'boosting_type': 'gbdt',
  'subsample': 0.5003590498688634,
  'subsample_freq': 1,
  'subsample_freq1': 0}    
+ 
+function(args)
+
 lgb=LGBMClassifier(**args).fit(feattureall,Y)
 
 testresult(feature,lgb)
+#kaggle得分0.768
